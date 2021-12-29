@@ -179,6 +179,7 @@ impl<T: Asset> Handle<T> {
     }
 
     #[inline]
+    #[must_use]
     pub fn clone_weak(&self) -> Self {
         Handle::weak(self.id)
     }
@@ -327,7 +328,8 @@ impl HandleUntyped {
         }
     }
 
-    pub fn clone_weak(&self) -> HandleUntyped {
+    #[must_use]
+    pub fn clone_weak(&self) -> Self {
         HandleUntyped::weak(self.id)
     }
 
