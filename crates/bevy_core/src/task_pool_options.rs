@@ -1,4 +1,6 @@
-use bevy_tasks::{AsyncComputeTaskPool, ComputeTaskPool, IoTaskPool, TaskPoolBuilder};
+use bevy_tasks::{
+    AsyncComputeTaskPool, ComputeTaskPool, IoTaskPool, TaskPoolBuilder, TaskPoolThreadPanicPolicy,
+};
 use bevy_utils::tracing::trace;
 
 /// Defines a simple way to determine how many threads to use given the number of remaining cores
@@ -30,6 +32,15 @@ impl TaskPoolThreadAssignmentPolicy {
     }
 }
 
+/// The set of policies describing how the according task pool behaves
+#[derive(Clone)]
+pub struct TaskPoolPolicies {
+    /// Used to determine number of threads to allocate
+    pub assignment_policy: TaskPoolThreadAssignmentPolicy,
+    /// Used to determine the panic policy of the task pool
+    pub panic_policy: TaskPoolThreadPanicPolicy,
+}
+
 /// Helper for configuring and creating the default task pools. For end-users who want full control,
 /// insert the default task pools into the resource map manually. If the pools are already inserted,
 /// this helper will do nothing.
@@ -42,12 +53,12 @@ pub struct DefaultTaskPoolOptions {
     /// max_total_threads
     pub max_total_threads: usize,
 
-    /// Used to determine number of IO threads to allocate
-    pub io: TaskPoolThreadAssignmentPolicy,
-    /// Used to determine number of async compute threads to allocate
-    pub async_compute: TaskPoolThreadAssignmentPolicy,
-    /// Used to determine number of compute threads to allocate
-    pub compute: TaskPoolThreadAssignmentPolicy,
+    /// Used to configure the IOTaskPool's inner policies
+    pub io: TaskPoolPolicies,
+    /// Used to configure the AsyncTaskPool's inner policies
+    pub async_compute: TaskPoolPolicies,
+    /// Used to configure the ComputeTaskPool's inner policies
+    pub compute: TaskPoolPolicies,
 }
 
 impl Default for DefaultTaskPoolOptions {
@@ -57,25 +68,34 @@ impl Default for DefaultTaskPoolOptions {
             min_total_threads: 1,
             max_total_threads: std::usize::MAX,
 
-            // Use 25% of cores for IO, at least 1, no more than 4
-            io: TaskPoolThreadAssignmentPolicy {
-                min_threads: 1,
-                max_threads: 4,
-                percent: 0.25,
+            io: TaskPoolPolicies {
+                // Use 25% of cores for IO, at least 1, no more than 4
+                assignment_policy: TaskPoolThreadAssignmentPolicy {
+                    min_threads: 1,
+                    max_threads: 4,
+                    percent: 0.25,
+                },
+                panic_policy: TaskPoolThreadPanicPolicy::CatchAndIgnore,
             },
 
-            // Use 25% of cores for async compute, at least 1, no more than 4
-            async_compute: TaskPoolThreadAssignmentPolicy {
-                min_threads: 1,
-                max_threads: 4,
-                percent: 0.25,
+            async_compute: TaskPoolPolicies {
+                // Use 25% of cores for async compute, at least 1, no more than 4
+                assignment_policy: TaskPoolThreadAssignmentPolicy {
+                    min_threads: 1,
+                    max_threads: 4,
+                    percent: 0.25,
+                },
+                panic_policy: TaskPoolThreadPanicPolicy::Propagate,
             },
 
-            // Use all remaining cores for compute (at least 1)
-            compute: TaskPoolThreadAssignmentPolicy {
-                min_threads: 1,
-                max_threads: std::usize::MAX,
-                percent: 1.0, // This 1.0 here means "whatever is left over"
+            compute: TaskPoolPolicies {
+                // Use all remaining cores for compute (at least 1)
+                assignment_policy: TaskPoolThreadAssignmentPolicy {
+                    min_threads: 1,
+                    max_threads: std::usize::MAX,
+                    percent: 1.0, // This 1.0 here means "whatever is left over"
+                },
+                panic_policy: TaskPoolThreadPanicPolicy::Propagate,
             },
         }
     }
@@ -103,6 +123,7 @@ impl DefaultTaskPoolOptions {
             // Determine the number of IO threads we will use
             let io_threads = self
                 .io
+                .assignment_policy
                 .get_number_of_threads(remaining_threads, total_threads);
 
             trace!("IO Threads: {}", io_threads);
@@ -112,6 +133,7 @@ impl DefaultTaskPoolOptions {
                 TaskPoolBuilder::default()
                     .num_threads(io_threads)
                     .thread_name("IO Task Pool".to_string())
+                    .panic_policy(self.io.panic_policy)
                     .build()
             });
         }
@@ -120,6 +142,7 @@ impl DefaultTaskPoolOptions {
             // Determine the number of async compute threads we will use
             let async_compute_threads = self
                 .async_compute
+                .assignment_policy
                 .get_number_of_threads(remaining_threads, total_threads);
 
             trace!("Async Compute Threads: {}", async_compute_threads);
@@ -129,6 +152,7 @@ impl DefaultTaskPoolOptions {
                 TaskPoolBuilder::default()
                     .num_threads(async_compute_threads)
                     .thread_name("Async Compute Task Pool".to_string())
+                    .panic_policy(self.async_compute.panic_policy)
                     .build()
             });
         }
@@ -138,6 +162,7 @@ impl DefaultTaskPoolOptions {
             // This is intentionally last so that an end user can specify 1.0 as the percent
             let compute_threads = self
                 .compute
+                .assignment_policy
                 .get_number_of_threads(remaining_threads, total_threads);
 
             trace!("Compute Threads: {}", compute_threads);
@@ -146,6 +171,7 @@ impl DefaultTaskPoolOptions {
                 TaskPoolBuilder::default()
                     .num_threads(compute_threads)
                     .thread_name("Compute Task Pool".to_string())
+                    .panic_policy(self.compute.panic_policy)
                     .build()
             });
         }

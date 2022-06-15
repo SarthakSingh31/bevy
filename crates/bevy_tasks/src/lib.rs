@@ -10,7 +10,7 @@ pub use task::Task;
 #[cfg(not(target_arch = "wasm32"))]
 mod task_pool;
 #[cfg(not(target_arch = "wasm32"))]
-pub use task_pool::{Scope, TaskPool, TaskPoolBuilder};
+pub use task_pool::{Scope, TaskPool, TaskPoolBuilder, TaskPoolThreadPanicPolicy};
 
 #[cfg(target_arch = "wasm32")]
 mod single_threaded_task_pool;

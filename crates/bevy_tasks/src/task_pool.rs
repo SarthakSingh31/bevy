@@ -22,6 +22,8 @@ pub struct TaskPoolBuilder {
     /// Allows customizing the name of the threads - helpful for debugging. If set, threads will
     /// be named <thread_name> (<thread_index>), i.e. "MyThreadPool (2)"
     thread_name: Option<String>,
+    /// Used to determine the panic policy of the task pool
+    panic_policy: TaskPoolThreadPanicPolicy,
 }
 
 impl TaskPoolBuilder {
@@ -50,13 +52,37 @@ impl TaskPoolBuilder {
         self
     }
 
+    /// Override the panic policy of the task pool
+    pub fn panic_policy(mut self, panic_policy: TaskPoolThreadPanicPolicy) -> Self {
+        self.panic_policy = panic_policy;
+        self
+    }
+
     /// Creates a new [`TaskPool`] based on the current options.
     pub fn build(self) -> TaskPool {
         TaskPool::new_internal(
             self.num_threads,
             self.stack_size,
             self.thread_name.as_deref(),
+            self.panic_policy,
         )
+    }
+}
+
+/// The policy used when a task pool's internal thread panics
+#[derive(Copy, Clone, Debug)]
+pub enum TaskPoolThreadPanicPolicy {
+    /// Propagate the panic to the main thread, causing the main
+    /// thread to panic as well.
+    Propagate,
+    /// Catches and ignores the panic on the thread. The default panic handler is still
+    /// called.
+    CatchAndIgnore,
+}
+
+impl Default for TaskPoolThreadPanicPolicy {
+    fn default() -> Self {
+        TaskPoolThreadPanicPolicy::Propagate
     }
 }
 
@@ -90,6 +116,7 @@ impl TaskPool {
         num_threads: Option<usize>,
         stack_size: Option<usize>,
         thread_name: Option<&str>,
+        panic_policy: TaskPoolThreadPanicPolicy,
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = async_channel::unbounded::<()>();
 
@@ -126,9 +153,24 @@ impl TaskPool {
 
                 thread_builder
                     .spawn(move || {
-                        let shutdown_future = ex.run(shutdown_rx.recv());
+                        let wait_for_shutdown = || {
+                            let shutdown_future = ex.run(shutdown_rx.recv());
+
+                            future::block_on(shutdown_future)
+                        };
+
+                        match panic_policy {
+                            TaskPoolThreadPanicPolicy::Propagate => wait_for_shutdown(),
+                            TaskPoolThreadPanicPolicy::CatchAndIgnore => loop {
+                                let result = std::panic::catch_unwind(wait_for_shutdown);
+
+                                if let Ok(result) = result {
+                                    break result;
+                                }
+                            },
+                        }
                         // Use unwrap_err because we expect a Closed error
-                        future::block_on(shutdown_future).unwrap_err();
+                        .unwrap_err();
                     })
                     .expect("Failed to spawn thread.")
             })
@@ -417,5 +459,53 @@ mod tests {
         barrier.wait();
         assert!(!thread_check_failed.load(Ordering::Acquire));
         assert_eq!(count.load(Ordering::Acquire), 200);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_propogate_panic_policy_handling() {
+        const COUNT: usize = 100;
+
+        let pool = TaskPoolBuilder::default()
+            .panic_policy(TaskPoolThreadPanicPolicy::Propagate)
+            .build();
+
+        for i in 0..COUNT {
+            pool.spawn(async move {
+                if i % 2 == 0 {
+                    panic!("Half of the tasks panic");
+                }
+            })
+            .detach();
+        }
+
+        drop(pool);
+    }
+
+    #[test]
+    fn test_ignore_panic_policy_handling() {
+        const COUNT: usize = 100;
+
+        let pool = TaskPoolBuilder::default()
+            .panic_policy(TaskPoolThreadPanicPolicy::CatchAndIgnore)
+            .build();
+
+        let (tx, rx) = std::sync::mpsc::sync_channel::<usize>(COUNT / 2);
+
+        for i in 0..COUNT {
+            let tx = tx.clone();
+            pool.spawn(async move {
+                if i % 2 == 0 {
+                    panic!("Half of the tasks panic");
+                }
+
+                tx.send(i).unwrap();
+            })
+            .detach();
+        }
+
+        for _ in 0..(COUNT / 2) {
+            assert!(rx.recv().unwrap() % 2 == 1);
+        }
     }
 }
