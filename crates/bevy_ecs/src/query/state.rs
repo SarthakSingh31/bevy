@@ -7,7 +7,7 @@ use crate::{
     query::{
         Access, DebugCheckedUnwrap, FilteredAccess, QueryCombinationIter, QueryIter, QueryParIter,
     },
-    storage::{SparseSetIndex, TableId},
+    storage::{SparseSetIndex, TableId, TableRow},
     world::{unsafe_world_cell::UnsafeWorldCell, World, WorldId},
 };
 use bevy_utils::tracing::warn;
@@ -1645,6 +1645,96 @@ impl<D: QueryData, F: QueryFilter> QueryState<D, F> {
                 Self,
             >())),
         }
+    }
+
+    /// Returns all entities that match the query.
+    pub fn entities<'w>(
+        &self,
+        world: UnsafeWorldCell<'w>,
+        last_run: Tick,
+        this_run: Tick,
+    ) -> Vec<Entity> {
+        // SAFETY: We only access table data that has been registered in `query_state`.
+        let tables = unsafe { &world.storages().tables };
+        let archetypes = world.archetypes();
+
+        // SAFETY: filter_state is initialized from the same world
+        let mut filter = unsafe { F::init_fetch(world, &self.filter_state, last_run, this_run) };
+        let mut entities = Vec::with_capacity(if D::IS_DENSE && F::IS_DENSE {
+            // SAFETY: The if check ensures that storage_id_iter stores TableIds
+            unsafe {
+                self.matched_storage_ids
+                    .iter()
+                    .map(|id| tables[id.table_id].entity_count())
+                    .sum()
+            }
+        } else {
+            // SAFETY: The if check ensures that storage_id_iter stores ArchetypeIds
+            unsafe {
+                self.matched_storage_ids
+                    .iter()
+                    .map(|id| archetypes[id.archetype_id].len())
+                    .sum()
+            }
+        });
+
+        if D::IS_DENSE && F::IS_DENSE {
+            for id in &self.matched_storage_ids {
+                // SAFETY: The if check ensures that matched_storage_ids stores TableIds
+                let table = &tables[unsafe { id.table_id }];
+
+                // SAFETY: Same state is used. Same world is used.
+                unsafe {
+                    F::set_table(&mut filter, &self.filter_state, table);
+                }
+
+                entities.extend(table.entities().into_iter().enumerate().filter_map(
+                    |(row, entity)| {
+                        // SAFETY: The have called the set_table function above.
+                        if unsafe {
+                            F::filter_fetch(&mut filter, *entity, TableRow::from_usize(row))
+                        } {
+                            Some(*entity)
+                        } else {
+                            None
+                        }
+                    },
+                ));
+            }
+        } else {
+            for id in &self.matched_storage_ids {
+                // SAFETY: The if check ensures that matched_storage_ids stores ArchetypeIds
+                let archetype = &archetypes[unsafe { id.archetype_id }];
+                let table = &tables[archetype.table_id()];
+
+                // SAFETY: Same state is used. Same world is used.
+                unsafe {
+                    F::set_archetype(&mut filter, &self.filter_state, archetype, table);
+                }
+
+                entities.extend(
+                    archetype
+                        .entities()
+                        .into_iter()
+                        .filter_map(|archetype_entity| {
+                            // SAFETY: The have called the set_archetype function above.
+                            if unsafe {
+                                F::filter_fetch(
+                                    &mut filter,
+                                    archetype_entity.id(),
+                                    archetype_entity.table_row(),
+                                )
+                            } {
+                                Some(archetype_entity.id())
+                            } else {
+                                None
+                            }
+                        }),
+                );
+            }
+        }
+
+        entities
     }
 }
 

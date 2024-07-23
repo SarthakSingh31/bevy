@@ -1471,6 +1471,12 @@ impl<'w, 's, D: QueryData, F: QueryFilter> Query<'w, 's, D, F> {
             this_run: self.this_run,
         }
     }
+
+    /// Returns all entities that match the query.
+    pub fn entities(&self) -> Vec<Entity> {
+        self.state
+            .entities(self.world, self.last_run, self.this_run)
+    }
 }
 
 impl<'w, 's, D: QueryData, F: QueryFilter> IntoIterator for &'w Query<'_, 's, D, F> {
