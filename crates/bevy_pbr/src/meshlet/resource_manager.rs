@@ -508,11 +508,12 @@ pub struct MeshletViewBindGroups {
 pub fn prepare_meshlet_per_frame_resources(
     mut resource_manager: ResMut<ResourceManager>,
     mut instance_manager: ResMut<InstanceManager>,
-    views: Query<(
+    mut views: Query<(
         Entity,
         &ExtractedView,
         Option<&RenderLayers>,
         AnyOf<(&Camera3d, &ShadowView)>,
+        Option<&mut MeshletViewResources>,
     )>,
     mut texture_cache: ResMut<TextureCache>,
     render_queue: Res<RenderQueue>,
@@ -554,7 +555,9 @@ pub fn prepare_meshlet_per_frame_resources(
         }
     };
 
-    for (view_entity, view, render_layers, (_, shadow_view)) in &views {
+    for (view_entity, view, render_layers, (_, shadow_view), mut meshlet_view_resources) in
+        &mut views
+    {
         let not_shadow_view = shadow_view.is_none();
 
         let instance_visibility = instance_manager
@@ -620,111 +623,177 @@ pub fn prepare_meshlet_per_frame_resources(
             },
         );
 
-        let second_pass_count = render_device.create_buffer_with_data(&BufferInitDescriptor {
-            label: Some("meshlet_second_pass_count"),
-            contents: bytemuck::bytes_of(&0u32),
-            usage: BufferUsages::STORAGE,
-        });
-        let second_pass_dispatch = render_device.create_buffer_with_data(&BufferInitDescriptor {
-            label: Some("meshlet_second_pass_dispatch"),
-            contents: DispatchIndirectArgs { x: 0, y: 1, z: 1 }.as_bytes(),
-            usage: BufferUsages::STORAGE | BufferUsages::INDIRECT,
-        });
+        let second_pass_count = get_or_create_buffer(
+            &render_device,
+            &render_queue,
+            meshlet_view_resources
+                .as_ref()
+                .map(|r| &r.second_pass_count),
+            "meshlet_second_pass_count",
+            bytemuck::bytes_of(&0u32),
+            BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        );
+        let second_pass_dispatch = get_or_create_buffer(
+            &render_device,
+            &render_queue,
+            meshlet_view_resources
+                .as_ref()
+                .map(|r| &r.second_pass_dispatch),
+            "meshlet_second_pass_dispatch",
+            DispatchIndirectArgs { x: 0, y: 1, z: 1 }.as_bytes(),
+            BufferUsages::STORAGE | BufferUsages::INDIRECT | BufferUsages::COPY_DST,
+        );
 
-        let first_bvh_cull_count_front =
-            render_device.create_buffer_with_data(&BufferInitDescriptor {
-                label: Some("meshlet_first_bvh_cull_count_front"),
-                contents: bytemuck::bytes_of(&0u32),
-                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
-            });
-        let first_bvh_cull_dispatch_front =
-            render_device.create_buffer_with_data(&BufferInitDescriptor {
-                label: Some("meshlet_first_bvh_cull_dispatch_front"),
-                contents: DispatchIndirectArgs { x: 0, y: 1, z: 1 }.as_bytes(),
-                usage: BufferUsages::STORAGE | BufferUsages::INDIRECT | BufferUsages::COPY_DST,
-            });
-        let first_bvh_cull_count_back =
-            render_device.create_buffer_with_data(&BufferInitDescriptor {
-                label: Some("meshlet_first_bvh_cull_count_back"),
-                contents: bytemuck::bytes_of(&0u32),
-                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
-            });
-        let first_bvh_cull_dispatch_back =
-            render_device.create_buffer_with_data(&BufferInitDescriptor {
-                label: Some("meshlet_first_bvh_cull_dispatch_back"),
-                contents: DispatchIndirectArgs { x: 0, y: 1, z: 1 }.as_bytes(),
-                usage: BufferUsages::STORAGE | BufferUsages::INDIRECT | BufferUsages::COPY_DST,
-            });
+        let first_bvh_cull_count_front = get_or_create_buffer(
+            &render_device,
+            &render_queue,
+            meshlet_view_resources
+                .as_ref()
+                .map(|r| &r.first_bvh_cull_count_front),
+            "meshlet_first_bvh_cull_count_front",
+            bytemuck::bytes_of(&0u32),
+            BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        );
+        let first_bvh_cull_dispatch_front = get_or_create_buffer(
+            &render_device,
+            &render_queue,
+            meshlet_view_resources
+                .as_ref()
+                .map(|r| &r.first_bvh_cull_dispatch_front),
+            "meshlet_first_bvh_cull_dispatch_front",
+            DispatchIndirectArgs { x: 0, y: 1, z: 1 }.as_bytes(),
+            BufferUsages::STORAGE | BufferUsages::INDIRECT | BufferUsages::COPY_DST,
+        );
+        let first_bvh_cull_count_back = get_or_create_buffer(
+            &render_device,
+            &render_queue,
+            meshlet_view_resources
+                .as_ref()
+                .map(|r| &r.first_bvh_cull_count_back),
+            "meshlet_first_bvh_cull_count_back",
+            bytemuck::bytes_of(&0u32),
+            BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        );
+        let first_bvh_cull_dispatch_back = get_or_create_buffer(
+            &render_device,
+            &render_queue,
+            meshlet_view_resources
+                .as_ref()
+                .map(|r| &r.first_bvh_cull_dispatch_back),
+            "meshlet_first_bvh_cull_dispatch_back",
+            DispatchIndirectArgs { x: 0, y: 1, z: 1 }.as_bytes(),
+            BufferUsages::STORAGE | BufferUsages::INDIRECT | BufferUsages::COPY_DST,
+        );
 
-        let second_bvh_cull_count_front =
-            render_device.create_buffer_with_data(&BufferInitDescriptor {
-                label: Some("meshlet_second_bvh_cull_count_front"),
-                contents: bytemuck::bytes_of(&0u32),
-                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
-            });
-        let second_bvh_cull_dispatch_front =
-            render_device.create_buffer_with_data(&BufferInitDescriptor {
-                label: Some("meshlet_second_bvh_cull_dispatch_front"),
-                contents: DispatchIndirectArgs { x: 0, y: 1, z: 1 }.as_bytes(),
-                usage: BufferUsages::STORAGE | BufferUsages::INDIRECT | BufferUsages::COPY_DST,
-            });
-        let second_bvh_cull_count_back =
-            render_device.create_buffer_with_data(&BufferInitDescriptor {
-                label: Some("meshlet_second_bvh_cull_count_back"),
-                contents: bytemuck::bytes_of(&0u32),
-                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
-            });
-        let second_bvh_cull_dispatch_back =
-            render_device.create_buffer_with_data(&BufferInitDescriptor {
-                label: Some("meshlet_second_bvh_cull_dispatch_back"),
-                contents: DispatchIndirectArgs { x: 0, y: 1, z: 1 }.as_bytes(),
-                usage: BufferUsages::STORAGE | BufferUsages::INDIRECT | BufferUsages::COPY_DST,
-            });
+        let second_bvh_cull_count_front = get_or_create_buffer(
+            &render_device,
+            &render_queue,
+            meshlet_view_resources
+                .as_ref()
+                .map(|r| &r.second_bvh_cull_count_front),
+            "meshlet_second_bvh_cull_count_front",
+            bytemuck::bytes_of(&0u32),
+            BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        );
+        let second_bvh_cull_dispatch_front = get_or_create_buffer(
+            &render_device,
+            &render_queue,
+            meshlet_view_resources
+                .as_ref()
+                .map(|r| &r.second_bvh_cull_dispatch_front),
+            "meshlet_second_bvh_cull_dispatch_front",
+            DispatchIndirectArgs { x: 0, y: 1, z: 1 }.as_bytes(),
+            BufferUsages::STORAGE | BufferUsages::INDIRECT | BufferUsages::COPY_DST,
+        );
+        let second_bvh_cull_count_back = get_or_create_buffer(
+            &render_device,
+            &render_queue,
+            meshlet_view_resources
+                .as_ref()
+                .map(|r| &r.second_bvh_cull_count_back),
+            "meshlet_second_bvh_cull_count_back",
+            bytemuck::bytes_of(&0u32),
+            BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        );
+        let second_bvh_cull_dispatch_back = get_or_create_buffer(
+            &render_device,
+            &render_queue,
+            meshlet_view_resources
+                .as_ref()
+                .map(|r| &r.second_bvh_cull_dispatch_back),
+            "meshlet_second_bvh_cull_dispatch_back",
+            DispatchIndirectArgs { x: 0, y: 1, z: 1 }.as_bytes(),
+            BufferUsages::STORAGE | BufferUsages::INDIRECT | BufferUsages::COPY_DST,
+        );
 
-        let front_meshlet_cull_count =
-            render_device.create_buffer_with_data(&BufferInitDescriptor {
-                label: Some("meshlet_front_meshlet_cull_count"),
-                contents: bytemuck::bytes_of(&0u32),
-                usage: BufferUsages::STORAGE,
-            });
-        let front_meshlet_cull_dispatch =
-            render_device.create_buffer_with_data(&BufferInitDescriptor {
-                label: Some("meshlet_front_meshlet_cull_dispatch"),
-                contents: DispatchIndirectArgs { x: 0, y: 1, z: 1 }.as_bytes(),
-                usage: BufferUsages::STORAGE | BufferUsages::INDIRECT,
-            });
-        let back_meshlet_cull_count =
-            render_device.create_buffer_with_data(&BufferInitDescriptor {
-                label: Some("meshlet_back_meshlet_cull_count"),
-                contents: bytemuck::bytes_of(&0u32),
-                usage: BufferUsages::STORAGE,
-            });
-        let back_meshlet_cull_dispatch =
-            render_device.create_buffer_with_data(&BufferInitDescriptor {
-                label: Some("meshlet_back_meshlet_cull_dispatch"),
-                contents: DispatchIndirectArgs { x: 0, y: 1, z: 1 }.as_bytes(),
-                usage: BufferUsages::STORAGE | BufferUsages::INDIRECT,
-            });
+        let front_meshlet_cull_count = get_or_create_buffer(
+            &render_device,
+            &render_queue,
+            meshlet_view_resources
+                .as_ref()
+                .map(|r| &r.front_meshlet_cull_count),
+            "meshlet_front_meshlet_cull_count",
+            bytemuck::bytes_of(&0u32),
+            BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        );
+        let front_meshlet_cull_dispatch = get_or_create_buffer(
+            &render_device,
+            &render_queue,
+            meshlet_view_resources
+                .as_ref()
+                .map(|r| &r.front_meshlet_cull_dispatch),
+            "meshlet_front_meshlet_cull_dispatch",
+            DispatchIndirectArgs { x: 0, y: 1, z: 1 }.as_bytes(),
+            BufferUsages::STORAGE | BufferUsages::INDIRECT | BufferUsages::COPY_DST,
+        );
+        let back_meshlet_cull_count = get_or_create_buffer(
+            &render_device,
+            &render_queue,
+            meshlet_view_resources
+                .as_ref()
+                .map(|r| &r.back_meshlet_cull_count),
+            "meshlet_back_meshlet_cull_count",
+            bytemuck::bytes_of(&0u32),
+            BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        );
+        let back_meshlet_cull_dispatch = get_or_create_buffer(
+            &render_device,
+            &render_queue,
+            meshlet_view_resources
+                .as_ref()
+                .map(|r| &r.back_meshlet_cull_dispatch),
+            "meshlet_back_meshlet_cull_dispatch",
+            DispatchIndirectArgs { x: 0, y: 1, z: 1 }.as_bytes(),
+            BufferUsages::STORAGE | BufferUsages::INDIRECT | BufferUsages::COPY_DST,
+        );
 
-        let visibility_buffer_software_raster_indirect_args = render_device
-            .create_buffer_with_data(&BufferInitDescriptor {
-                label: Some("meshlet_visibility_buffer_software_raster_indirect_args"),
-                contents: DispatchIndirectArgs { x: 0, y: 1, z: 1 }.as_bytes(),
-                usage: BufferUsages::STORAGE | BufferUsages::INDIRECT,
-            });
+        let visibility_buffer_software_raster_indirect_args = get_or_create_buffer(
+            &render_device,
+            &render_queue,
+            meshlet_view_resources
+                .as_ref()
+                .map(|r| &r.visibility_buffer_software_raster_indirect_args),
+            "meshlet_visibility_buffer_software_raster_indirect_args",
+            DispatchIndirectArgs { x: 0, y: 1, z: 1 }.as_bytes(),
+            BufferUsages::STORAGE | BufferUsages::INDIRECT | BufferUsages::COPY_DST,
+        );
 
-        let visibility_buffer_hardware_raster_indirect_args = render_device
-            .create_buffer_with_data(&BufferInitDescriptor {
-                label: Some("meshlet_visibility_buffer_hardware_raster_indirect_args"),
-                contents: DrawIndirectArgs {
-                    vertex_count: 128 * 3,
-                    instance_count: 0,
-                    first_vertex: 0,
-                    first_instance: 0,
-                }
-                .as_bytes(),
-                usage: BufferUsages::STORAGE | BufferUsages::INDIRECT,
-            });
+        let visibility_buffer_hardware_raster_indirect_args = get_or_create_buffer(
+            &render_device,
+            &render_queue,
+            meshlet_view_resources
+                .as_ref()
+                .map(|r| &r.visibility_buffer_hardware_raster_indirect_args),
+            "meshlet_visibility_buffer_hardware_raster_indirect_args",
+            DrawIndirectArgs {
+                vertex_count: 128 * 3,
+                instance_count: 0,
+                first_vertex: 0,
+                first_instance: 0,
+            }
+            .as_bytes(),
+            BufferUsages::STORAGE | BufferUsages::INDIRECT | BufferUsages::COPY_DST,
+        );
 
         let depth_pyramid = ViewDepthPyramid::new(
             &render_device,
@@ -789,6 +858,26 @@ pub fn prepare_meshlet_per_frame_resources(
             view_size: view.viewport.zw(),
             not_shadow_view,
         });
+    }
+}
+
+fn get_or_create_buffer(
+    render_device: &RenderDevice,
+    render_queue: &RenderQueue,
+    existing_buffer: Option<&Buffer>,
+    label: &'static str,
+    contents: &[u8],
+    usage: BufferUsages,
+) -> Buffer {
+    if let Some(buffer) = existing_buffer {
+        render_queue.write_buffer(buffer, 0, contents);
+        buffer.clone()
+    } else {
+        render_device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some(label),
+            contents,
+            usage,
+        })
     }
 }
 
