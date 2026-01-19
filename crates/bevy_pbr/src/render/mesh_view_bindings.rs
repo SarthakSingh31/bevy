@@ -582,6 +582,36 @@ pub struct MeshViewBindGroup {
     pub main: BindGroup,
     pub binding_array: BindGroup,
     pub empty: BindGroup,
+    cache_id: MeshViewBindGroupId,
+}
+
+#[derive(PartialEq)]
+struct MeshViewBindGroupId {
+    view_id: Option<BufferId>,
+    lights_id: Option<BufferId>,
+    point_shadow_id: TextureViewId,
+    directional_shadow_id: TextureViewId,
+    clusterable_objects_id: Option<BufferId>,
+    clusterable_object_index_lists_id: Option<BufferId>,
+    offsets_and_counts_id: Option<BufferId>,
+    globals_id: Option<BufferId>,
+    fog_id: Option<BufferId>,
+    light_probes_id: Option<BufferId>,
+    visibility_ranges_id: Option<BufferId>,
+    ssr_id: Option<BufferId>,
+    contact_shadows_id: Option<BufferId>,
+    ssao_id: TextureViewId,
+    environment_map_id: Option<BufferId>,
+    tonemapping_lut_id: TextureViewId,
+    transmission_id: TextureViewId,
+    transmission_sampler_id: SamplerId,
+    atmosphere_transmittance_lut_id: Option<TextureViewId>,
+    atmosphere_buffer_id: Option<BufferId>,
+    stbn_id: Option<TextureViewId>,
+    msaa_samples: u32,
+    has_oit: bool,
+    has_atmosphere: bool,
+    tonemapping: Tonemapping,
 }
 
 pub fn prepare_mesh_view_bind_groups(
@@ -611,6 +641,7 @@ pub fn prepare_mesh_view_bind_groups(
         Option<&AtmosphereTextures>,
         Has<ExtractedAtmosphere>,
         Option<&ViewContactShadowsUniformOffset>,
+        Option<&MeshViewBindGroup>,
     )>,
     (images, mut fallback_images, fallback_image, fallback_image_zero): (
         Res<RenderAssets<GpuImage>>,
@@ -673,6 +704,7 @@ pub fn prepare_mesh_view_bind_groups(
             atmosphere_textures,
             has_atmosphere,
             _contact_shadows_offset,
+            existing_bind_group,
         ) in &views
         {
             let fallback_ssao = fallback_images
@@ -682,6 +714,57 @@ pub fn prepare_mesh_view_bind_groups(
             let ssao_view = ssao_resources
                 .map(|t| &t.screen_space_ambient_occlusion_texture.default_view)
                 .unwrap_or(&fallback_ssao);
+
+            let lut_bindings =
+                get_lut_bindings(&images, &tonemapping_luts, tonemapping, &fallback_image);
+
+            let stbn_view = if cfg!(feature = "bluenoise_texture") {
+                images.get(&blue_noise.texture).map(|i| i.texture_view.id())
+            } else {
+                None
+            };
+
+            let transmission_view = transmission_texture
+                .map(|transmission| &transmission.view)
+                .unwrap_or(&fallback_image_zero.texture_view);
+
+            let transmission_sampler = transmission_texture
+                .map(|transmission| &transmission.sampler)
+                .unwrap_or(&fallback_image_zero.sampler);
+
+            let cache_id = MeshViewBindGroupId {
+                view_id: view_uniforms.uniforms.buffer().map(|b| b.id()),
+                lights_id: light_meta.view_gpu_lights.buffer().map(|b| b.id()),
+                point_shadow_id: shadow_bindings.point_light_depth_texture_view.id(),
+                directional_shadow_id: shadow_bindings.directional_light_depth_texture_view.id(),
+                clusterable_objects_id: global_light_meta.gpu_clusterable_objects.buffer().map(|b| b.id()),
+                clusterable_object_index_lists_id: cluster_bindings.clusterable_object_index_lists_buffer().map(|b| b.id()),
+                offsets_and_counts_id: cluster_bindings.offsets_and_counts_buffer().map(|b| b.id()),
+                globals_id: globals_buffer.buffer.buffer().map(|b| b.id()),
+                fog_id: fog_meta.gpu_fogs.buffer().map(|b| b.id()),
+                light_probes_id: light_probes_buffer.buffer().map(|b| b.id()),
+                visibility_ranges_id: visibility_ranges.buffer().buffer().map(|b| b.id()),
+                ssr_id: ssr_buffer.buffer().map(|b| b.id()),
+                contact_shadows_id: contact_shadows_buffer.0.buffer().map(|b| b.id()),
+                ssao_id: ssao_view.id(),
+                environment_map_id: environment_map_uniform.buffer().map(|b| b.id()),
+                tonemapping_lut_id: lut_bindings.0.id(),
+                transmission_id: transmission_view.id(),
+                transmission_sampler_id: transmission_sampler.id(),
+                atmosphere_transmittance_lut_id: atmosphere_textures.map(|t| t.transmittance_lut.default_view.id()),
+                atmosphere_buffer_id: atmosphere_buffer.as_ref().and_then(|b| b.buffer.buffer()).map(|b| b.id()),
+                stbn_id: stbn_view,
+                msaa_samples: msaa.samples(),
+                has_oit,
+                has_atmosphere,
+                tonemapping: *tonemapping,
+            };
+
+            if let Some(existing_bind_group) = existing_bind_group {
+                if existing_bind_group.cache_id == cache_id {
+                    continue;
+                }
+            }
 
             let mut layout_key = MeshPipelineViewLayoutKey::from(*msaa)
                 | MeshPipelineViewLayoutKey::from(prepass_textures);
@@ -727,8 +810,6 @@ pub fn prepare_mesh_view_bind_groups(
 
             entries = entries.extend_with_indices(((18, environment_map_binding.clone()),));
 
-            let lut_bindings =
-                get_lut_bindings(&images, &tonemapping_luts, tonemapping, &fallback_image);
             entries = entries.extend_with_indices(((19, lut_bindings.0), (20, lut_bindings.1)));
 
             // When using WebGL, we can't have a depth texture with multisampling
@@ -746,16 +827,7 @@ pub fn prepare_mesh_view_bind_groups(
                 }
             };
 
-            let transmission_view = transmission_texture
-                .map(|transmission| &transmission.view)
-                .unwrap_or(&fallback_image_zero.texture_view);
-
-            let transmission_sampler = transmission_texture
-                .map(|transmission| &transmission.sampler)
-                .unwrap_or(&fallback_image_zero.sampler);
-
-            entries =
-                entries.extend_with_indices(((25, transmission_view), (26, transmission_sampler)));
+            entries = entries.extend_with_indices(((25, transmission_view), (26, transmission_sampler)));
 
             if has_oit
                 && let (
@@ -907,6 +979,7 @@ pub fn prepare_mesh_view_bind_groups(
                     &pipeline_cache.get_bind_group_layout(&layout.empty_layout),
                     &[],
                 ),
+                cache_id,
             });
         }
     }

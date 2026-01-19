@@ -3,6 +3,8 @@ use std::sync::Mutex;
 use crate::tonemapping::{TonemappingLuts, TonemappingPipeline, ViewTonemappingPipeline};
 
 use bevy_ecs::{prelude::*, query::QueryItem};
+use bevy_platform::collections::hash_map::Entry;
+use bevy_platform::collections::HashMap;
 use bevy_render::{
     diagnostic::RecordDiagnostics,
     render_asset::RenderAssets,
@@ -20,7 +22,7 @@ use super::{get_lut_bindings, Tonemapping};
 
 #[derive(Default)]
 pub struct TonemappingNode {
-    cached_bind_group: Mutex<Option<(BufferId, TextureViewId, TextureViewId, BindGroup)>>,
+    cached_bind_groups: Mutex<HashMap<(BufferId, TextureViewId, TextureViewId), BindGroup>>,
     last_tonemapping: Mutex<Option<Tonemapping>>,
 }
 
@@ -76,24 +78,20 @@ impl ViewNode for TonemappingNode {
         };
         if tonemapping_changed {
             *last_tonemapping = Some(*tonemapping);
+            self.cached_bind_groups.lock().unwrap().clear();
         }
 
-        let mut cached_bind_group = self.cached_bind_group.lock().unwrap();
-        let bind_group = match &mut *cached_bind_group {
-            Some((buffer_id, texture_id, lut_id, bind_group))
-                if view_uniforms_id == *buffer_id
-                    && source.id() == *texture_id
-                    && *lut_id != fallback_image.d3.texture_view.id()
-                    && !tonemapping_changed =>
-            {
-                bind_group
-            }
-            cached_bind_group => {
-                let tonemapping_luts = world.resource::<TonemappingLuts>();
+        let mut cached_bind_groups = self.cached_bind_groups.lock().unwrap();
+        let tonemapping_luts = world.resource::<TonemappingLuts>();
+        let lut_bindings =
+            get_lut_bindings(gpu_images, tonemapping_luts, tonemapping, fallback_image);
+        let lut_id = lut_bindings.0.id();
 
-                let lut_bindings =
-                    get_lut_bindings(gpu_images, tonemapping_luts, tonemapping, fallback_image);
-
+        let bind_group = match cached_bind_groups
+            .entry((view_uniforms_id, source.id(), lut_id))
+        {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
                 let bind_group = render_context.render_device().create_bind_group(
                     None,
                     &pipeline_cache.get_bind_group_layout(&tonemapping_pipeline.texture_bind_group),
@@ -106,13 +104,7 @@ impl ViewNode for TonemappingNode {
                     )),
                 );
 
-                let (_, _, _, bind_group) = cached_bind_group.insert((
-                    view_uniforms_id,
-                    source.id(),
-                    lut_bindings.0.id(),
-                    bind_group,
-                ));
-                bind_group
+                entry.insert(bind_group)
             }
         };
 

@@ -1331,6 +1331,7 @@ pub struct UiMeta {
     vertices: RawBufferVec<UiVertex>,
     indices: RawBufferVec<u32>,
     view_bind_group: Option<BindGroup>,
+    view_bind_group_id: Option<BufferId>,
 }
 
 impl Default for UiMeta {
@@ -1339,6 +1340,7 @@ impl Default for UiMeta {
             vertices: RawBufferVec::new(BufferUsages::VERTEX),
             indices: RawBufferVec::new(BufferUsages::INDEX),
             view_bind_group: None,
+            view_bind_group_id: None,
         }
     }
 }
@@ -1474,11 +1476,16 @@ pub fn prepare_uinodes(
 
         ui_meta.vertices.clear();
         ui_meta.indices.clear();
-        ui_meta.view_bind_group = Some(render_device.create_bind_group(
-            "ui_view_bind_group",
-            &pipeline_cache.get_bind_group_layout(&ui_pipeline.view_layout),
-            &BindGroupEntries::single(view_binding),
-        ));
+
+        let view_bind_group_id = view_uniforms.uniforms.buffer().map(|b| b.id());
+        if ui_meta.view_bind_group_id != view_bind_group_id {
+            ui_meta.view_bind_group = Some(render_device.create_bind_group(
+                "ui_view_bind_group",
+                &pipeline_cache.get_bind_group_layout(&ui_pipeline.view_layout),
+                &BindGroupEntries::single(view_binding),
+            ));
+            ui_meta.view_bind_group_id = view_bind_group_id;
+        }
 
         // Buffer indexes
         let mut vertices_index = 0;

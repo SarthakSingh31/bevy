@@ -52,7 +52,7 @@ use {
         render_phase::{PhaseItem, RenderCommand, RenderCommandResult, TrackedRenderPass},
         render_resource::{
             binding_types::uniform_buffer, BindGroup, BindGroupEntries, BindGroupLayoutEntries,
-            Buffer, BufferInitDescriptor, BufferUsages, ShaderStages, ShaderType, VertexFormat,
+            Buffer, BufferId, BufferInitDescriptor, BufferUsages, ShaderStages, ShaderType, VertexFormat,
         },
         renderer::RenderDevice,
         sync_world::{MainEntity, TemporaryRenderEntity},
@@ -300,6 +300,7 @@ struct LineGizmoUniformBindgroupLayout {
 #[derive(Resource)]
 struct LineGizmoUniformBindgroup {
     bindgroup: BindGroup,
+    cache_id: Option<BufferId>,
 }
 
 fn prepare_line_gizmo_bind_group(
@@ -308,14 +309,23 @@ fn prepare_line_gizmo_bind_group(
     render_device: Res<RenderDevice>,
     pipeline_cache: Res<PipelineCache>,
     line_gizmo_uniforms: Res<ComponentUniforms<LineGizmoUniform>>,
+    existing_bindgroup: Option<Res<LineGizmoUniformBindgroup>>,
 ) {
     if let Some(binding) = line_gizmo_uniforms.uniforms().binding() {
+        let cache_id = line_gizmo_uniforms.uniforms().buffer().map(|b| b.id());
+        if let Some(existing) = existing_bindgroup {
+            if existing.cache_id == cache_id {
+                return;
+            }
+        }
+
         commands.insert_resource(LineGizmoUniformBindgroup {
             bindgroup: render_device.create_bind_group(
                 "LineGizmoUniform bindgroup",
                 &pipeline_cache.get_bind_group_layout(&line_gizmo_uniform_layout.layout),
                 &BindGroupEntries::single(binding),
             ),
+            cache_id,
         });
     }
 }

@@ -223,6 +223,13 @@ impl GpuClusterableObjects {
         }
     }
 
+    pub fn buffer(&self) -> Option<&bevy_render::render_resource::Buffer> {
+        match self {
+            GpuClusterableObjects::Uniform(buffer) => buffer.buffer(),
+            GpuClusterableObjects::Storage(buffer) => buffer.buffer(),
+        }
+    }
+
     pub fn min_size(buffer_binding_type: BufferBindingType) -> NonZero<u64> {
         match buffer_binding_type {
             BufferBindingType::Storage { .. } => GpuClusterableObjectsStorage::min_size(),
@@ -479,6 +486,34 @@ impl ViewClusterBindings {
                 cluster_offsets_and_counts,
                 ..
             } => cluster_offsets_and_counts.binding(),
+        }
+    }
+
+    pub fn clusterable_object_index_lists_buffer(
+        &self,
+    ) -> Option<&bevy_render::render_resource::Buffer> {
+        match &self.buffers {
+            ViewClusterBuffers::Uniform {
+                clusterable_object_index_lists,
+                ..
+            } => clusterable_object_index_lists.buffer(),
+            ViewClusterBuffers::Storage {
+                clusterable_object_index_lists,
+                ..
+            } => clusterable_object_index_lists.buffer(),
+        }
+    }
+
+    pub fn offsets_and_counts_buffer(&self) -> Option<&bevy_render::render_resource::Buffer> {
+        match &self.buffers {
+            ViewClusterBuffers::Uniform {
+                cluster_offsets_and_counts,
+                ..
+            } => cluster_offsets_and_counts.buffer(),
+            ViewClusterBuffers::Storage {
+                cluster_offsets_and_counts,
+                ..
+            } => cluster_offsets_and_counts.buffer(),
         }
     }
 

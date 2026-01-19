@@ -1,6 +1,8 @@
 use crate::{blit::BlitPipeline, upscaling::ViewUpscalingPipeline};
 use bevy_camera::{CameraOutputMode, ClearColor, ClearColorConfig};
 use bevy_ecs::{prelude::*, query::QueryItem};
+use bevy_platform::collections::hash_map::Entry;
+use bevy_platform::collections::HashMap;
 use bevy_render::{
     camera::ExtractedCamera,
     diagnostic::RecordDiagnostics,
@@ -13,7 +15,7 @@ use std::sync::Mutex;
 
 #[derive(Default)]
 pub struct UpscalingNode {
-    cached_texture_bind_group: Mutex<Option<(TextureViewId, BindGroup)>>,
+    cached_texture_bind_groups: Mutex<HashMap<TextureViewId, BindGroup>>,
 }
 
 impl ViewNode for UpscalingNode {
@@ -53,19 +55,17 @@ impl ViewNode for UpscalingNode {
         // texture to be upscaled to the output texture
         let main_texture_view = target.main_texture_view();
 
-        let mut cached_bind_group = self.cached_texture_bind_group.lock().unwrap();
-        let bind_group = match &mut *cached_bind_group {
-            Some((id, bind_group)) if main_texture_view.id() == *id => bind_group,
-            cached_bind_group => {
+        let mut cached_bind_groups = self.cached_texture_bind_groups.lock().unwrap();
+        let bind_group = match cached_bind_groups.entry(main_texture_view.id()) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
                 let bind_group = blit_pipeline.create_bind_group(
                     render_context.render_device(),
                     main_texture_view,
                     pipeline_cache,
                 );
 
-                let (_, bind_group) =
-                    cached_bind_group.insert((main_texture_view.id(), bind_group));
-                bind_group
+                entry.insert(bind_group)
             }
         };
 

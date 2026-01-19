@@ -452,6 +452,13 @@ impl Default for SpriteMeta {
 #[derive(Component)]
 pub struct SpriteViewBindGroup {
     pub value: BindGroup,
+    cache_key: SpriteViewBindGroupId,
+}
+
+#[derive(PartialEq)]
+struct SpriteViewBindGroupId {
+    view_uniforms_id: Option<BufferId>,
+    tonemapping_lut_id: TextureViewId,
 }
 
 #[derive(Resource, Deref, DerefMut, Default)]
@@ -566,7 +573,7 @@ pub fn prepare_sprite_view_bind_groups(
     pipeline_cache: Res<PipelineCache>,
     sprite_pipeline: Res<SpritePipeline>,
     view_uniforms: Res<ViewUniforms>,
-    views: Query<(Entity, &Tonemapping), With<ExtractedView>>,
+    views: Query<(Entity, &Tonemapping, Option<&SpriteViewBindGroup>), With<ExtractedView>>,
     tonemapping_luts: Res<TonemappingLuts>,
     images: Res<RenderAssets<GpuImage>>,
     fallback_image: Res<FallbackImage>,
@@ -575,9 +582,20 @@ pub fn prepare_sprite_view_bind_groups(
         return;
     };
 
-    for (entity, tonemapping) in &views {
+    for (entity, tonemapping, existing_bind_group) in &views {
         let lut_bindings =
             get_lut_bindings(&images, &tonemapping_luts, tonemapping, &fallback_image);
+        let cache_key = SpriteViewBindGroupId {
+            view_uniforms_id: view_uniforms.uniforms.buffer().map(|b| b.id()),
+            tonemapping_lut_id: lut_bindings.0.id(),
+        };
+
+        if let Some(existing_bind_group) = existing_bind_group {
+            if existing_bind_group.cache_key == cache_key {
+                continue;
+            }
+        }
+
         let view_bind_group = render_device.create_bind_group(
             "mesh2d_view_bind_group",
             &pipeline_cache.get_bind_group_layout(&sprite_pipeline.view_layout),
@@ -586,6 +604,7 @@ pub fn prepare_sprite_view_bind_groups(
 
         commands.entity(entity).insert(SpriteViewBindGroup {
             value: view_bind_group,
+            cache_key,
         });
     }
 }
@@ -1009,3 +1028,4 @@ fn apply_scaling(
         }
     }
 }
+

@@ -502,6 +502,27 @@ pub struct MeshletViewBindGroups {
     pub material_shade: Option<BindGroup>,
     pub remap_1d_to_2d_dispatch: Option<BindGroup>,
     pub fill_counts: BindGroup,
+    cache_key: MeshletViewBindGroupsId,
+}
+
+#[derive(PartialEq)]
+struct MeshletViewBindGroupsId {
+    visibility_buffer_id: TextureViewId,
+    previous_depth_pyramid_id: TextureViewId,
+    instance_uniforms_id: Option<BufferId>,
+    instance_view_visibility_id: BufferId,
+    instance_aabbs_id: Option<BufferId>,
+    instance_bvh_root_nodes_id: Option<BufferId>,
+    view_uniforms_id: Option<BufferId>,
+    previous_view_uniforms_id: Option<BufferId>,
+    bvh_nodes_id: Option<BufferId>,
+    meshlet_cull_data_id: Option<BufferId>,
+    meshlets_id: Option<BufferId>,
+    indices_id: Option<BufferId>,
+    vertex_positions_id: Option<BufferId>,
+    vertex_normals_id: Option<BufferId>,
+    vertex_uvs_id: Option<BufferId>,
+    instance_material_ids_id: Option<BufferId>,
 }
 
 // TODO: Cache things per-view and skip running this system / optimize this system
@@ -885,14 +906,14 @@ pub fn prepare_meshlet_view_bind_groups(
     meshlet_mesh_manager: Res<MeshletMeshManager>,
     resource_manager: Res<ResourceManager>,
     instance_manager: Res<InstanceManager>,
-    views: Query<(Entity, &MeshletViewResources)>,
+    views: Query<(Entity, &MeshletViewResources, Option<&MeshletViewBindGroups>)>,
     view_uniforms: Res<ViewUniforms>,
     previous_view_uniforms: Res<PreviousViewUniforms>,
     render_device: Res<RenderDevice>,
     pipeline_cache: Res<PipelineCache>,
     mut commands: Commands,
 ) {
-    let (Some(view_uniforms), Some(previous_view_uniforms)) = (
+    let (Some(view_uniforms_binding), Some(previous_view_uniforms_binding)) = (
         view_uniforms.uniforms.binding(),
         previous_view_uniforms.uniforms.binding(),
     ) else {
@@ -900,7 +921,46 @@ pub fn prepare_meshlet_view_bind_groups(
     };
 
     // TODO: Some of these bind groups can be reused across multiple views
-    for (view_entity, view_resources) in &views {
+    for (view_entity, view_resources, bind_groups) in &views {
+        let cache_key = MeshletViewBindGroupsId {
+            visibility_buffer_id: view_resources.visibility_buffer.default_view.id(),
+            previous_depth_pyramid_id: view_resources.previous_depth_pyramid.id(),
+            instance_uniforms_id: instance_manager.instance_uniforms.buffer().map(|b| b.id()),
+            instance_view_visibility_id: view_resources.instance_visibility.id(),
+            instance_aabbs_id: instance_manager.instance_aabbs.buffer().map(|b| b.id()),
+            instance_bvh_root_nodes_id: instance_manager
+                .instance_bvh_root_nodes
+                .buffer()
+                .map(|b| b.id()),
+            view_uniforms_id: view_uniforms.uniforms.buffer().map(|b| b.id()),
+            previous_view_uniforms_id: previous_view_uniforms.uniforms.buffer().map(|b| b.id()),
+            bvh_nodes_id: meshlet_mesh_manager.bvh_nodes.buffer().map(|b| b.id()),
+            meshlet_cull_data_id: meshlet_mesh_manager
+                .meshlet_cull_data
+                .buffer()
+                .map(|b| b.id()),
+            meshlets_id: meshlet_mesh_manager.meshlets.buffer().map(|b| b.id()),
+            indices_id: meshlet_mesh_manager.indices.buffer().map(|b| b.id()),
+            vertex_positions_id: meshlet_mesh_manager
+                .vertex_positions
+                .buffer()
+                .map(|b| b.id()),
+            vertex_normals_id: meshlet_mesh_manager
+                .vertex_normals
+                .buffer()
+                .map(|b| b.id()),
+            vertex_uvs_id: meshlet_mesh_manager.vertex_uvs.buffer().map(|b| b.id()),
+            instance_material_ids_id: instance_manager
+                .instance_material_ids
+                .buffer()
+                .map(|b| b.id()),
+        };
+
+        if let Some(bind_groups) = bind_groups {
+            if bind_groups.cache_key == cache_key {
+                continue;
+            }
+        }
         let clear_visibility_buffer = render_device.create_bind_group(
             "meshlet_clear_visibility_buffer_bind_group",
             &pipeline_cache.get_bind_group_layout(if view_resources.not_shadow_view {
@@ -917,8 +977,8 @@ pub fn prepare_meshlet_view_bind_groups(
                 .get_bind_group_layout(&resource_manager.first_instance_cull_bind_group_layout),
             &BindGroupEntries::sequential((
                 &view_resources.previous_depth_pyramid,
-                view_uniforms.clone(),
-                previous_view_uniforms.clone(),
+                view_uniforms_binding.clone(),
+                previous_view_uniforms_binding.clone(),
                 instance_manager.instance_uniforms.binding().unwrap(),
                 view_resources.instance_visibility.as_entire_binding(),
                 instance_manager.instance_aabbs.binding().unwrap(),
@@ -942,8 +1002,8 @@ pub fn prepare_meshlet_view_bind_groups(
                 .get_bind_group_layout(&resource_manager.second_instance_cull_bind_group_layout),
             &BindGroupEntries::sequential((
                 &view_resources.previous_depth_pyramid,
-                view_uniforms.clone(),
-                previous_view_uniforms.clone(),
+                view_uniforms_binding.clone(),
+                previous_view_uniforms_binding.clone(),
                 instance_manager.instance_uniforms.binding().unwrap(),
                 view_resources.instance_visibility.as_entire_binding(),
                 instance_manager.instance_aabbs.binding().unwrap(),
@@ -966,8 +1026,8 @@ pub fn prepare_meshlet_view_bind_groups(
                 .get_bind_group_layout(&resource_manager.first_bvh_cull_bind_group_layout),
             &BindGroupEntries::sequential((
                 &view_resources.previous_depth_pyramid,
-                view_uniforms.clone(),
-                previous_view_uniforms.clone(),
+                view_uniforms_binding.clone(),
+                previous_view_uniforms_binding.clone(),
                 meshlet_mesh_manager.bvh_nodes.binding(),
                 instance_manager.instance_uniforms.binding().unwrap(),
                 view_resources
@@ -1003,8 +1063,8 @@ pub fn prepare_meshlet_view_bind_groups(
                 .get_bind_group_layout(&resource_manager.first_bvh_cull_bind_group_layout),
             &BindGroupEntries::sequential((
                 &view_resources.previous_depth_pyramid,
-                view_uniforms.clone(),
-                previous_view_uniforms.clone(),
+                view_uniforms_binding.clone(),
+                previous_view_uniforms_binding.clone(),
                 meshlet_mesh_manager.bvh_nodes.binding(),
                 instance_manager.instance_uniforms.binding().unwrap(),
                 view_resources.first_bvh_cull_count_back.as_entire_binding(),
@@ -1040,8 +1100,8 @@ pub fn prepare_meshlet_view_bind_groups(
                 .get_bind_group_layout(&resource_manager.second_bvh_cull_bind_group_layout),
             &BindGroupEntries::sequential((
                 &view_resources.previous_depth_pyramid,
-                view_uniforms.clone(),
-                previous_view_uniforms.clone(),
+                view_uniforms_binding.clone(),
+                previous_view_uniforms_binding.clone(),
                 meshlet_mesh_manager.bvh_nodes.binding(),
                 instance_manager.instance_uniforms.binding().unwrap(),
                 view_resources
@@ -1072,8 +1132,8 @@ pub fn prepare_meshlet_view_bind_groups(
                 .get_bind_group_layout(&resource_manager.second_bvh_cull_bind_group_layout),
             &BindGroupEntries::sequential((
                 &view_resources.previous_depth_pyramid,
-                view_uniforms.clone(),
-                previous_view_uniforms.clone(),
+                view_uniforms_binding.clone(),
+                previous_view_uniforms_binding.clone(),
                 meshlet_mesh_manager.bvh_nodes.binding(),
                 instance_manager.instance_uniforms.binding().unwrap(),
                 view_resources
@@ -1104,8 +1164,8 @@ pub fn prepare_meshlet_view_bind_groups(
                 .get_bind_group_layout(&resource_manager.first_meshlet_cull_bind_group_layout),
             &BindGroupEntries::sequential((
                 &view_resources.previous_depth_pyramid,
-                view_uniforms.clone(),
-                previous_view_uniforms.clone(),
+                view_uniforms_binding.clone(),
+                previous_view_uniforms_binding.clone(),
                 meshlet_mesh_manager.meshlet_cull_data.binding(),
                 instance_manager.instance_uniforms.binding().unwrap(),
                 view_resources
@@ -1135,8 +1195,8 @@ pub fn prepare_meshlet_view_bind_groups(
                 .get_bind_group_layout(&resource_manager.second_meshlet_cull_bind_group_layout),
             &BindGroupEntries::sequential((
                 &view_resources.previous_depth_pyramid,
-                view_uniforms.clone(),
-                previous_view_uniforms.clone(),
+                view_uniforms_binding.clone(),
+                previous_view_uniforms_binding.clone(),
                 meshlet_mesh_manager.meshlet_cull_data.binding(),
                 instance_manager.instance_uniforms.binding().unwrap(),
                 view_resources
@@ -1190,7 +1250,7 @@ pub fn prepare_meshlet_view_bind_groups(
                     .software_raster_cluster_count
                     .as_entire_binding(),
                 &view_resources.visibility_buffer.default_view,
-                view_uniforms.clone(),
+                view_uniforms_binding.clone(),
             )),
         );
 
@@ -1317,6 +1377,7 @@ pub fn prepare_meshlet_view_bind_groups(
             material_shade,
             remap_1d_to_2d_dispatch,
             fill_counts,
+            cache_key,
         });
     }
 }
